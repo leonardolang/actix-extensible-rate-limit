@@ -16,9 +16,12 @@ log = "0.4.16"
 once_cell = "1.10.0"
 redis = { version = "0.21.5", default-features = false, features = ["tokio-comp", "aio", "connection-manager"], optional = true }
 thiserror = "1.0.30"
+owning_ref = { version = "0.4.1", optional = true }
 
 [features]
-default = ["dashmap"]
+default = ["hashmap"]
+dashmap = ["dep:dashmap"]
+hashmap = ["dep:owning_ref"]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["time", "test-util"] }

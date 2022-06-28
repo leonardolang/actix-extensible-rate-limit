@@ -1,25 +1,39 @@
+mod types;
+
+#[cfg(feature = "dashmap")]
+mod dashmap;
+
+#[cfg(feature = "hashmap")]
+mod hashmap;
+
 use crate::backend::{Backend, SimpleBackend, SimpleInput, SimpleOutput};
+use crate::backend::memory::types::*;
+
 use actix_web::rt::task::JoinHandle;
 use actix_web::rt::time::Instant;
 use async_trait::async_trait;
-use dashmap::DashMap;
+
+#[cfg(feature = "dashmap")]
+pub use crate::backend::memory::dashmap::*;
+
+#[cfg(feature = "hashmap")]
+pub use crate::backend::memory::hashmap::*;
+
+#[cfg(all(feature = "dashmap", feature = "hashmap"))]
+compile_error!("features `dashmap` and `hashmap` are mutually exclusive");
+
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
 pub const DEFAULT_GC_INTERVAL_SECONDS: u64 = 60 * 10;
 
-/// A Fixed Window rate limiter [Backend] that uses [Dashmap](dashmap::DashMap) to store keys
-/// in memory.
+/// A Fixed Window rate limiter [Backend] that uses [Dashmap](dashmap::DashMap) or
+/// [HashMap](std::collections::hash_map::HashMap) to store keys in memory.
 #[derive(Clone)]
 pub struct InMemoryBackend {
-    map: Arc<DashMap<String, Value>>,
+    map: Arc<MemoryMap>,
     gc_handle: Option<Arc<JoinHandle<()>>>,
-}
-
-struct Value {
-    ttl: Instant,
-    count: u64,
 }
 
 impl InMemoryBackend {
@@ -29,7 +43,7 @@ impl InMemoryBackend {
         }
     }
 
-    fn garbage_collector(map: Arc<DashMap<String, Value>>, interval: Duration) -> JoinHandle<()> {
+    fn garbage_collector(map: Arc<MemoryMap>, interval: Duration) -> JoinHandle<()> {
         assert!(
             interval.as_secs_f64() > 0f64,
             "GC interval must be non-zero"
@@ -60,7 +74,7 @@ impl Builder {
     }
 
     pub fn build(self) -> InMemoryBackend {
-        let map = Arc::new(DashMap::<String, Value>::new());
+        let map = Arc::new(MemoryMap::new());
         let gc_handle = self.gc_interval.map(|gc_interval| {
             Arc::new(InMemoryBackend::garbage_collector(map.clone(), gc_interval))
         });
