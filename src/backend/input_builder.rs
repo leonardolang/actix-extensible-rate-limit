@@ -7,6 +7,7 @@ use std::time::Duration;
 use thiserror::Error;
 
 type CustomFn = Box<dyn Fn(&ServiceRequest) -> Result<String, actix_web::Error>>;
+type ExtCustomFn = Box<dyn Fn(&ServiceRequest) -> Result<(String, Option<Duration>, Option<u64>), actix_web::Error>>;
 
 pub type SimpleInputFuture = Ready<Result<SimpleInput, actix_web::Error>>;
 
@@ -24,6 +25,7 @@ pub struct SimpleInputFunctionBuilder {
     path_key: bool,
     custom_key: Option<String>,
     custom_fn: Option<CustomFn>,
+    ext_custom_fn: Option<ExtCustomFn>,
 }
 
 impl SimpleInputFunctionBuilder {
@@ -36,6 +38,7 @@ impl SimpleInputFunctionBuilder {
             path_key: false,
             custom_key: None,
             custom_fn: None,
+            ext_custom_fn: None,
         }
     }
 
@@ -89,9 +92,48 @@ impl SimpleInputFunctionBuilder {
         self
     }
 
+    /// Similar to `custom_fn`, but providing the option to return alternative `interval`
+    /// and `max_requests` for a particular key.
+    ///
+    /// This method can be used to implement dynamic rate limits for different endpoints
+    /// or groups of endpoints, but care must be taken to ensure separate keys are used for
+    /// each combination of limits/backend, otherwise the results will likely not match
+    /// the expected behaviour.
+    ///
+    /// # Example
+    /// ```
+    /// use core::time::Duration;
+    /// use actix_extensible_rate_limit::backend::SimpleInputFunctionBuilder;
+    ///
+    /// let builder = SimpleInputFunctionBuilder::new(Duration::from_secs(15), 30);
+    ///
+    /// builder
+    /// .peer_ip_key()
+    /// .ext_custom_fn(|req| {
+    ///      let (key, interval, max_requests) = {
+    ///          match req.uri().path() {
+    ///              "/hallo" => ("hallo", Some(Duration::from_secs(5)), Some( 5)),
+    ///              "/ciao"  => ("ciao", Some(Duration::from_secs(5)), Some(90)),
+    ///              "/oi"    => ("oi", Some(Duration::from_secs(5)), Some(30)),
+    ///              _        => ("default", None, None),
+    ///          }
+    ///      };
+    ///      Ok((key.to_owned(), interval, max_requests))
+    /// });
+    /// ```
+    pub fn ext_custom_fn<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&ServiceRequest) -> Result<(String, Option<Duration>, Option<u64>), actix_web::Error> + 'static,
+    {
+        self.ext_custom_fn = Some(Box::new(f));
+        self
+    }
+
     pub fn build(self) -> impl Fn(&ServiceRequest) -> SimpleInputFuture + 'static {
         move |req| {
             ready((|| {
+                let mut interval = self.interval;
+                let mut max_requests = self.max_requests;
                 let mut components = Vec::new();
                 let info = req.connection_info();
                 if let Some(custom) = &self.custom_key {
@@ -109,11 +151,19 @@ impl SimpleInputFunctionBuilder {
                 if let Some(f) = &self.custom_fn {
                     components.push(f(req)?)
                 }
+                if let Some(f) = &self.ext_custom_fn {
+                    let (component, ext_interval, ext_max_requests) = f(req)?;
+
+                    interval = ext_interval.unwrap_or(interval);
+                    max_requests = ext_max_requests.unwrap_or(max_requests);
+
+                    components.push(component)
+                }
                 let key = components.join("-");
 
                 Ok(SimpleInput {
-                    interval: self.interval,
-                    max_requests: self.max_requests,
+                    interval,
+                    max_requests,
                     key,
                 })
             })())
